@@ -1,0 +1,158 @@
+# 1. Instalar las librerías necesarias (ejecutar primero)
+!pip install geopandas shapely matplotlib
+
+# 2. Importar las librerías
+import geopandas as gpd
+from shapely.affinity import translate, scale
+import matplotlib.pyplot as plt
+import numpy as np
+
+# 3. Verificar archivos disponibles y cargar GeoPackage
+import os
+
+# Ver todos los archivos en /content/
+print("Archivos disponibles en /content/:")
+archivos = os.listdir('/content/')
+archivos_gpkg = [f for f in archivos if f.endswith('.gpkg')]
+print(f"Archivos .gpkg encontrados: {archivos_gpkg}")
+
+# Si hay espacios en el nombre, usar el nombre exacto
+archivo_gpkg = '/content/LOCALIDADES EST.gpkg'  # Cambia por tu archivo real
+
+# Verificar que el archivo existe
+if os.path.exists(archivo_gpkg):
+    print(f"✓ Archivo encontrado: {archivo_gpkg}")
+
+    # Ver qué capas tiene el GeoPackage
+    try:
+        capas = gpd.list_layers(archivo_gpkg)
+        print("Capas disponibles en el GeoPackage:")
+        for i, capa in enumerate(capas):
+            print(f"{i}: {capa}")
+    except Exception as e:
+        print(f"Error al leer capas: {e}")
+        print("Intentando cargar directamente...")
+
+else:
+    print(f"✗ Archivo no encontrado: {archivo_gpkg}")
+    print("Archivos disponibles:")
+    for archivo in archivos:
+        print(f"  - {archivo}")
+
+# 4. Cargar la capa específica
+if os.path.exists(archivo_gpkg):
+    try:
+        # Intentar cargar sin especificar capa (funcionará si hay solo una capa)
+        datos = gpd.read_file(archivo_gpkg)
+        print(f"✓ Cargados {len(datos)} polígonos exitosamente")
+
+    except Exception as e:
+        print(f"Error al cargar archivo: {e}")
+        # Si falla, intentar con la primera capa
+        try:
+            datos = gpd.read_file(archivo_gpkg, layer=0)
+            print(f"✓ Cargados {len(datos)} polígonos de la primera capa")
+        except Exception as e2:
+            print(f"Error al cargar primera capa: {e2}")
+            exit()
+else:
+    print("No se puede continuar sin el archivo. Por favor verifica el nombre del archivo.")
+    exit()
+
+print(f"\nCargados {len(datos)} polígonos")
+print(f"Columnas disponibles: {list(datos.columns)}")
+
+# 5. Proyectar a sistema métrico (ajusta el EPSG según tu zona)
+# Para México puedes usar: 32614 (UTM Zone 14N) o 32613 (UTM Zone 13N)
+datos = datos.to_crs(epsg=32614)
+
+# 6. Calcular área y ordenar de mayor a menor
+datos["area"] = datos.geometry.area
+datos = datos.sort_values("area", ascending=False).reset_index(drop=True)
+
+# 7. Configurar la cuadrícula
+columnas = 10  # número de columnas en la cuadrícula
+filas = int(np.ceil(len(datos) / columnas))
+
+# 8. Configurar tamaño uniforme para todos los polígonos
+tamaño_uniforme = 120  # tamaño uniforme para todos los polígonos
+espaciado = 8  # espacio entre polígonos
+
+nuevas_geometrías = []
+
+for i, (idx, row) in enumerate(datos.iterrows()):
+    geom = row.geometry
+
+    # Calcular posición en la cuadrícula
+    col = i % columnas
+    fila = i // columnas
+
+    # Obtener dimensiones originales del polígono
+    minx, miny, maxx, maxy = geom.bounds
+    ancho_original = maxx - minx
+    alto_original = maxy - miny
+
+    # Calcular factor de escala para que quepa en el tamaño uniforme
+    # Usar el 80% del tamaño para dejar un poco de margen
+    factor_escala = min(tamaño_uniforme / ancho_original, tamaño_uniforme / alto_original) * 0.8
+
+    # Escalar el polígono uniformemente
+    geom_escalado = scale(geom, xfact=factor_escala, yfact=factor_escala, origin='centroid')
+
+    # Calcular posición de destino (centro de cada celda)
+    x_destino = col * (tamaño_uniforme + espaciado) + tamaño_uniforme/2
+    y_destino = -fila * (tamaño_uniforme + espaciado) - tamaño_uniforme/2
+
+    # Obtener el centro del polígono escalado
+    minx_esc, miny_esc, maxx_esc, maxy_esc = geom_escalado.bounds
+    centro_x = (minx_esc + maxx_esc) / 2
+    centro_y = (miny_esc + maxy_esc) / 2
+
+    # Trasladar para centrar en la celda
+    x_offset = x_destino - centro_x
+    y_offset = y_destino - centro_y
+
+    geom_final = translate(geom_escalado, xoff=x_offset, yoff=y_offset)
+    nuevas_geometrías.append(geom_final)
+
+# 9. Actualizar geometrías
+datos_viz = datos.copy()
+datos_viz["geometry"] = nuevas_geometrías
+
+# 10. Crear la visualización
+fig, ax = plt.subplots(1, 1, figsize=(15, filas * 1.5))
+
+# Plotear con tamaño uniforme
+datos_viz.plot(ax=ax,
+               edgecolor="black",
+               facecolor="lightblue",
+               linewidth=0.5,
+               alpha=0.8)
+
+# Configurar el plot
+ax.set_xlim(-espaciado, columnas * (tamaño_uniforme + espaciado))
+ax.set_ylim(-filas * (tamaño_uniforme + espaciado), tamaño_uniforme)
+ax.set_aspect('equal')
+ax.axis('off')
+
+plt.title(f"Polígonos ordenados por área (tamaño uniforme)\n({len(datos)} polígonos organizados en {filas} filas x {columnas} columnas)",
+          fontsize=16, pad=20)
+plt.tight_layout()
+plt.show()
+
+# 11. Información adicional
+print(f"\nTotal de polígonos: {len(datos)}")
+print(f"Organizados en {filas} filas y {columnas} columnas")
+print(f"Área más grande: {datos['area'].max():.2f} m²")
+print(f"Área más pequeña: {datos['area'].min():.2f} m²")
+print(f"Proporción área más grande vs más pequeña: {datos['area'].max() / datos['area'].min():.1f}:1")
+print(f"Área promedio: {datos['area'].mean():.2f} m²")
+
+# 12. Opcional: Mostrar información del archivo
+print(f"\nInformación del GeoPackage:")
+print(f"Sistema de coordenadas: {datos.crs}")
+print(f"Tipo de geometría: {datos.geometry.geom_type.iloc[0]}")
+
+# 13. Opcional: Mostrar las primeras filas de datos
+print(f"\nPrimeras 5 filas de datos:")
+print(datos[['area']].head())
